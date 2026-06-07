@@ -30,6 +30,8 @@ jobs:
           FREE_EMAIL: ${{ secrets.FREE_EMAIL }}
           FREE_PASSWORD: ${{ secrets.FREE_PASSWORD }}
           SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}    # ← 新增
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}        # ← 新增
         run: node renew.js
         
       - name: 📥 上传失败现场截图
