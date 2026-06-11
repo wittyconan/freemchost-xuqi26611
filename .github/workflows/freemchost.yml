@@ -2,7 +2,7 @@ name: Freemchost Auto Renew Permanent
 
 on:
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '10 3 * * *'
   workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮强制触发
 
 jobs:
