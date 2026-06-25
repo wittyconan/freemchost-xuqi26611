@@ -43,7 +43,8 @@ async function sendTG(message) {
   console.log(`📋 检测到共有 ${serverUrls.length} 个服务器待处理...`);
 
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.new_context({
+  // ✅ 核心修正：严格使用官方标准的 JavaScript 驼峰命名法
+  const context = await browser.newContext({
     viewport: { width: 1280, height: 1024 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     locale: 'zh-CN'
@@ -62,24 +63,22 @@ async function sendTG(message) {
     const emailInput = page.locator('input[type="email"]');
     await emailInput.waitFor({ state: 'visible', timeout: 15000 });
     
-    // 【核心改动】：先点击再聚焦，随后用 type 模拟键盘逐字输入（或强力 fill）
     await emailInput.click();
     await emailInput.focus();
     await emailInput.fill(process.env.FREE_EMAIL);
-    await page.wait_for_timeout && await page.waitForTimeout(3000) || await new Promise(r => setTimeout(r, 300));
+    await page.waitForTimeout(300);
 
     const passInput = page.locator('input[type="password"]');
-    await pass_input_err || await passInput.click();
+    await passInput.click();
     await passInput.focus();
     await passInput.fill(process.env.FREE_PASSWORD);
-    await page.wait_for_timeout && await page.waitForTimeout(300) || await new Promise(r => setTimeout(r, 300));
+    await page.waitForTimeout(300);
     
     console.log('🔐 正在触发登录...');
     const signInBtn = page.locator('button:has-text("Sign in")');
     await signInBtn.click();
     
     console.log('⏳ 等待登录跳转...');
-    // 使用更温和的 url 状态判定，不单纯赌 waitForNavigation 动作
     await page.waitForURL(url => !url.href.includes('/login'), { timeout: 30000 });
     console.log('✅ 账号登录成功！');
 
@@ -98,8 +97,7 @@ async function sendTG(message) {
         await manageTab.waitFor({ state: 'visible', timeout: 15000 });
         await manageTab.click();
 
-        // 稍微等 2 秒等 Ajax 组件刷出来
-        await page.wait_for_timeout && await page.waitForTimeout(2000) || await new Promise(r => setTimeout(r, 2000));
+        await page.waitForTimeout(2000);
 
         console.log('🔍 正在寻觅红色的 [Renew now] 按钮...');
         const renewBtn = page.locator('button:has-text("Renew now")').last();
@@ -116,7 +114,7 @@ async function sendTG(message) {
           await renewBtn.click();
           console.log(`🎉 【成功】${serverLabel} 已精准点击续期按钮！`);
           reportSummary.push(`🟢 <b>${serverLabel}</b>: 续期成功`);
-          await page.wait_for_timeout && await page.waitForTimeout(3000) || await new Promise(r => setTimeout(r, 3000));
+          await page.waitForTimeout(3000);
         } else {
           console.log(`⚠️ ${serverLabel} 未找到续期按钮，可能时间未到。`);
           reportSummary.push(`🟡 <b>${serverLabel}</b>: 跳过（时间未到或已续期）`);
