@@ -1,68 +1,44 @@
-name: Freemchost Auto Renew Permanent #[cite: 1]
+name: Freemchost Auto Renew Permanent
 
-on: #[cite: 1]
-  schedule: #[cite: 1]
-    - cron: '10 3 * * *' #[cite: 1]
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮强制触发[cite: 1]
+on:
+  schedule:
+    - cron: '10 3 * * *'
+  workflow_dispatch:
 
-# 必须声明权限，否则 GitHub 没有权限删除旧的工作流记录
-permissions:
-  actions: write
-  contents: read
+jobs:
+  browser-auto-renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
 
-jobs: #[cite: 1]
-  browser-auto-renew: #[cite: 1]
-    runs-on: ubuntu-latest #[cite: 1]
-    steps: #[cite: 1]
-      - name: 拉取代码 #[cite: 1]
-        uses: actions/checkout@v4 #[cite: 1]
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v4
 
-      - name: 安装 Node.js 环境 #[cite: 1]
-        uses: actions/setup-node@v4 #[cite: 1]
-        with: #[cite: 1]
-          node-version: '20' #[cite: 1]
+      - name: 安装 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: 安装 Playwright 核心依赖 #[cite: 1]
-        run: | #[cite: 1]
-          npm init -y #[cite: 1]
-          npm install playwright #[cite: 1]
-
-      - name: 初始化 谷歌环境 #[cite: 1]
-        run: npx playwright install chromium --with-deps #[cite: 1]
-
-      - name: 执行自动化续期脚本 #[cite: 1]
-        env: #[cite: 1]
-          FREE_EMAIL: ${{ secrets.FREE_EMAIL }} #[cite: 1]
-          FREE_PASSWORD: ${{ secrets.FREE_PASSWORD }} #[cite: 1]
-          SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }} #[cite: 1]
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }} #[cite: 1]
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }} #[cite: 1]
-        run: node renew.js #[cite: 1]
-        
-      - name: 📥 上传失败现场截图 #[cite: 1]
-        if: failure() #[cite: 1]
-        uses: actions/upload-artifact@v4 #[cite: 1]
-        with: #[cite: 1]
-          name: Error-Screenshot-Artifact #[cite: 1]
-          path: screenshots/*.png #[cite: 1]
-
-      - name: 🧹 自动清理旧的工作流运行记录（官方原生方案）
-        if: always() # 保证无论前面成功还是失败，都必然会执行清理
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: 安装 Playwright
         run: |
-          echo "🚀 开始清理历史运行记录..."
-          # 获取当前工作流的所有历史运行 ID，排除当前正在运行的 ID
-          RUN_IDS=$(gh run list --workflow "${{ github.workflow }}" --json databaseId --limit 100 -q '.[].databaseId' | grep -v "^${{ github.run_id }}$" || true)
-          
-          if [ -z "$RUN_IDS" ]; then
-            echo "✅ 没有发现其他历史运行记录，无需清理。"
-          else
-            echo "🔍 发现以下历史记录需要删除:"
-            echo "$RUN_IDS"
-            for run_id in $RUN_IDS; do
-              echo "🗑️ 正在删除历史运行记录 ID: $run_id"
-              gh run delete "$run_id" || echo "⚠️ 删除失败，跳过..."
-            done
-            echo "✨ 历史记录清理完成，仅保留当前运行记录！"
-          fi
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: 执行自动化续期脚本
+        env:
+          FREE_EMAIL: ${{ secrets.FREE_EMAIL }}
+          FREE_PASSWORD: ${{ secrets.FREE_PASSWORD }}
+          SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: node renew.js
+
+      - name: 上传运行截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Freemchost-Screenshots-${{ github.run_number }}
+          path: screenshots/*.png
+          if-no-files-found: ignore
+          retention-days: 7
