@@ -58,6 +58,18 @@ async function sendTG(message) {
     console.log('📂 正在直达服务器详情页...');
     await page.goto(process.env.SERVER_PAGE_URL, { waitUntil: 'networkidle', timeout: 30000 });
 
+    // 🛡️ 自动检测并关闭 Discord 弹窗逻辑
+    try {
+      console.log('🕵️ 正在检测是否存在 Discord 社区邀请弹窗...');
+      const maybeLaterBtn = page.getByText('Maybe later', { exact: true });
+      // 最多等待 5 秒，如果发现弹窗则自动点击 "Maybe later" 按钮
+      await maybeLaterBtn.waitFor({ state: 'visible', timeout: 5000 });
+      await maybeLaterBtn.click();
+      console.log('👋 已成功点击 "Maybe later" 关闭弹窗！');
+    } catch (e) {
+      console.log('📝 未检测到 Discord 弹窗或已被自动处理，继续执行...');
+    }
+
     console.log('🗂️ 正在切换到 [Manage] 标签页...');
     const manageTab = page.getByText('Manage', { exact: true });
     await manageTab.waitFor({ state: 'visible', timeout: 15000 });
@@ -74,13 +86,13 @@ async function sendTG(message) {
       await renewBtn.click();
       console.log('🎉 【成功】已精准点击续期按钮！');
       
-      // 🚨 新增：调用 TG 发送成功通知！
+      // 调用 TG 发送成功通知！
       await sendTG(`🎉 <b>Freemchost 自动续期成功</b>\n\n<b>状态:</b> GitHub 机器人已成功登录并点击续期按钮。\n<b>时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`);
       
       await page.waitForTimeout(5000);
     } else {
       console.log('⚠️ 未找到续期按钮，可能已被续期，或者页面结构有变。');
-      // 🚨 新增：调用 TG 发送跳过通知
+      // 调用 TG 发送跳过通知
       await sendTG(`⚠️ <b>Freemchost 续期跳过</b>\n\n<b>状态:</b> 页面上未找到 Renew now 按钮，可能时间未到或页面变动。`);
     }
 
@@ -97,8 +109,8 @@ async function sendTG(message) {
       console.error('❌ 截图保存失败:', screenshotError.message);
     }
     
-    // 🚨 新增：调用 TG 发送失败报警！
-    await sendTG(`🚨 <b>Freemchost 自动续期失败</b>\n\n<b>错误详情:</b> <code>${error.message.substring(0, 150)}...</code>\n<b>排查:</b> 脚本已异常退出，请前往 GitHub Actions 页面下载案发现场截图！`);
+    // 调用 TG 发送失败报警！
+    await sendTG(`🚨 <b>Freemchost 自动续期失败</b>\n\n<b>错误详情:</b> <code>${error.message.substring(0, 150)}...</code>\n<b>排查:</b> 脚本已异常退出，请前往 GitHub Actions 页面下载案场截图！`);
     
     process.exit(1);
   } finally {
