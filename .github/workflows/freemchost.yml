@@ -5,6 +5,11 @@ on:
     - cron: '10 3 * * *'
   workflow_dispatch: # 允许你在 GitHub 页面上手动点击按钮强制触发
 
+# 必须声明权限，否则 GitHub 没有权限删除旧的工作流记录
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   browser-auto-renew:
     runs-on: ubuntu-latest
@@ -30,8 +35,8 @@ jobs:
           FREE_EMAIL: ${{ secrets.FREE_EMAIL }}
           FREE_PASSWORD: ${{ secrets.FREE_PASSWORD }}
           SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}    # ← 新增
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}        # ← 新增
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: node renew.js
         
       - name: 📥 上传失败现场截图
@@ -40,3 +45,12 @@ jobs:
         with:
           name: Error-Screenshot-Artifact
           path: screenshots/*.png
+
+      - name: 🧹 自动清理旧的工作流运行记录
+        uses: Mattraiano/delete-workflow-runs@v2
+        if: always() # 保证无论前面成功还是失败，都必然会执行清理
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 0          # 保留0天的记录（即不按时间保留，完全由下面参数决定）
+          keep_minimum_runs: 1    # 仅保留当前最后一次运行记录
