@@ -58,17 +58,25 @@ async function sendTG(message) {
     console.log('📂 正在直达服务器详情页...');
     await page.goto(process.env.SERVER_PAGE_URL, { waitUntil: 'networkidle', timeout: 30000 });
 
-    // 🛡️ 自动检测并关闭 Discord 弹窗逻辑
-    try {
-      console.log('🕵️ 正在检测是否存在 Discord 社区邀请弹窗...');
-      const maybeLaterBtn = page.getByText('Maybe later', { exact: true });
-      // 最多等待 5 秒，如果发现弹窗则自动点击 "Maybe later" 按钮
-      await maybeLaterBtn.waitFor({ state: 'visible', timeout: 5000 });
-      await maybeLaterBtn.click();
-      console.log('👋 已成功点击 "Maybe later" 关闭弹窗！');
-    } catch (e) {
-      console.log('📝 未检测到 Discord 弹窗或已被自动处理，继续执行...');
+    // 🛡️ 终极防线：自动检测并关闭连环弹窗 (Discord邀请、Trustpilot评价等)
+    console.log('🕵️ 正在检测并清理屏幕上的连环拦截弹窗...');
+    // 循环3次，对付连环弹窗。就算它弹3个不同的窗也能全部点掉
+    for (let i = 0; i < 3; i++) {
+      try {
+        // 使用 .first() 防止出现多个隐藏按钮导致 strict 模式报错
+        const maybeLaterBtn = page.getByText('Maybe later', { exact: true }).first();
+        // 最多等 3 秒，如果没弹窗就会报错跳入 catch 并结束循环
+        await maybeLaterBtn.waitFor({ state: 'visible', timeout: 3000 });
+        
+        console.log(`👋 发现弹窗 (第 ${i + 1} 个)，已成功点击关闭！`);
+        await maybeLaterBtn.click();
+        await page.waitForTimeout(1500); // 给一点时间让弹窗动画消失，迎接可能出现的下一个弹窗
+      } catch (e) {
+        // 如果超时报错，说明页面上已经没有可见的 Maybe later 按钮了，安全了
+        break; 
+      }
     }
+    console.log('✅ 弹窗检测完毕，环境安全！');
 
     console.log('🗂️ 正在切换到 [Manage] 标签页...');
     const manageTab = page.getByText('Manage', { exact: true });
@@ -110,7 +118,7 @@ async function sendTG(message) {
     }
     
     // 调用 TG 发送失败报警！
-    await sendTG(`🚨 <b>Freemchost 自动续期失败</b>\n\n<b>错误详情:</b> <code>${error.message.substring(0, 150)}...</code>\n<b>排查:</b> 脚本已异常退出，请前往 GitHub Actions 页面下载案场截图！`);
+    await sendTG(`🚨 <b>Freemchost 自动续期失败</b>\n\n<b>错误详情:</b> <code>${error.message.substring(0, 150)}...</code>\n<b>排查:</b> 脚本已异常退出，请前往 GitHub Actions 页面下载现场截图！`);
     
     process.exit(1);
   } finally {
