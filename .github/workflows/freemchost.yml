@@ -2,13 +2,12 @@ name: Freemchost Auto Renew Permanent
 
 on:
   schedule:
-    # 依然保持高密度覆盖（每 6 小时一次，确保 60 小时有效期持续刷新）
-    - cron: '10 */6 * * *'
+    - cron: '0 0 * * *' # 初始占位，后续会被脚本根据实际剩余时间自动动态重写
   workflow_dispatch:
 
 permissions:
+  contents: write
   actions: write
-  contents: read
 
 jobs:
   browser-auto-renew:
@@ -21,181 +20,105 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
 
       - name: 安装 Node.js 环境
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: 安装基础网络工具与依赖包
+      - name: 安装基础工具与依赖
         run: |
           sudo apt-get update -y && sudo apt-get install -y netcat-openbsd
           npm init -y
           npm install playwright js-yaml
           npx playwright install chromium --with-deps
 
-      - name: ⚙️ 部署 Mihomo 代理内核 (双引擎全协议支持)
+      - name: ⚙️ 部署 Mihomo 代理内核
         if: ${{ env.NODE_LINK != '' }}
         run: |
-          echo "🔄 识别到 NODE_LINK，开始部署本地代理转换层..."
-          
-          # 1. 保存节点链接并启动临时本地 HTTP 服务
           echo "$NODE_LINK" > node.txt
           python3 -m http.server 8080 &
-          
-          # 2. 下载并启动 Subconverter
           wget -qO sub.tar.gz https://github.com/tindy2013/subconverter/releases/latest/download/subconverter_linux64.tar.gz
           tar -xf sub.tar.gz
           nohup ./subconverter/subconverter > sub.log 2>&1 &
           sleep 2
-          
-          # 3. 下载并部署 Mihomo (Clash Meta) 内核
           wget -qO mihomo.gz https://github.com/MetaCubeX/mihomo/releases/download/v1.18.2/mihomo-linux-amd64-v1.18.2.gz
           gunzip mihomo.gz
           chmod +x mihomo
-          
-          # 4. 生成 Node.js 节点解析脚本
           cat << 'EOF' > parse_node.js
           const fs = require('fs');
           const http = require('http');
           const url = require('url');
           const yaml = require('js-yaml');
-
           const nodeLink = (process.env.NODE_LINK || '').trim();
-
           async function trySubconverter() {
             return new Promise((resolve) => {
               http.get('http://127.0.0.1:25500/sub?target=clash&url=http://127.0.0.1:8080/node.txt&insert=false', (res) => {
                 let data = '';
                 res.on('data', chunk => data += chunk);
-                res.on('end', () => {
-                  if (data.includes('proxies:') && data.includes('name:')) {
-                    resolve(data);
-                  } else {
-                    resolve(null);
-                  }
-                });
+                res.on('end', () => resolve(data.includes('proxies:') && data.includes('name:') ? data : null));
               }).on('error', () => resolve(null));
             });
           }
-
           function parseRawLink(link) {
             link = link.trim();
             if (link.startsWith('socks5://') || link.startsWith('socks://')) {
               const u = new url.URL(link);
               return { name: 'node', type: 'socks5', server: u.hostname, port: parseInt(u.port || '1080'), username: u.username || '', password: u.password || '' };
             }
-            if (link.startsWith('hysteria2://') || link.startsWith('hy2://')) {
-              const u = new url.URL(link.replace('hy2://', 'hysteria2://'));
-              const pwd = u.username || (u.pathname || '').replace(/^\/\//, '').split('@')[0].split(':')[0];
-              const n = { name: 'node', type: 'hysteria2', server: u.hostname, port: parseInt(u.port || '443'), password: pwd };
-              if (u.searchParams.get('sni')) n.sni = u.searchParams.get('sni');
-              if (['1', 'true'].includes(u.searchParams.get('insecure'))) n['skip-cert-verify'] = true;
-              return n;
-            }
-            if (link.startsWith('tuic://')) {
-              const u = new url.URL(link);
-              const uinfo = (u.username || '').split(':');
-              const n = { name: 'node', type: 'tuic', server: u.hostname, port: parseInt(u.port || '443'), uuid: uinfo[0], password: uinfo[1] || '', 'congestion-controller': u.searchParams.get('congestion_control') || 'bbr' };
-              if (u.searchParams.get('sni')) n.sni = u.searchParams.get('sni');
-              if (['1', 'true'].includes(u.searchParams.get('insecure'))) n['skip-cert-verify'] = true;
-              return n;
-            }
             if (link.startsWith('vless://')) {
               const u = new url.URL(link);
               const sec = u.searchParams.get('security') || '';
               const n = { name: 'node', type: 'vless', server: u.hostname, port: parseInt(u.port || '443'), uuid: u.username, tls: ['tls', 'reality'].includes(sec), network: u.searchParams.get('type') || 'tcp' };
               if (u.searchParams.get('sni')) n.servername = u.searchParams.get('sni');
-              if (u.searchParams.get('fp')) n['client-fingerprint'] = u.searchParams.get('fp');
-              if (sec === 'reality') {
-                n['reality-opts'] = { 'public-key': u.searchParams.get('pbk') || '' };
-                if (u.searchParams.get('sid')) n['reality-opts']['short-id'] = u.searchParams.get('sid');
-              }
-              if (n.network === 'ws') {
-                n['ws-opts'] = { path: u.searchParams.get('path') || '/' };
-                if (u.searchParams.get('host')) n['ws-opts'].headers = { Host: u.searchParams.get('host') };
-              } else if (n.network === 'grpc') {
-                n['grpc-opts'] = { 'grpc-service-name': u.searchParams.get('serviceName') || '' };
-              }
-              return n;
-            }
-            if (link.startsWith('vmess://')) {
-              let b64 = link.substring(8);
-              b64 += '='.repeat((4 - (b64.length % 4)) % 4);
-              const data = JSON.parse(Buffer.from(b64, 'base64').toString('utf-8'));
-              const n = { name: 'node', type: 'vmess', server: data.add, port: parseInt(data.port || 443), uuid: data.id, alterId: parseInt(data.aid || 0), cipher: 'auto', tls: data.tls === 'tls', network: data.net || 'tcp' };
-              if (data.sni) n.servername = data.sni;
-              if (n.network === 'ws') {
-                n['ws-opts'] = { path: data.path || '/' };
-                if (data.host) n['ws-opts'].headers = { Host: data.host };
-              }
-              return n;
-            }
-            if (link.startsWith('trojan://')) {
-              const u = new url.URL(link);
-              const n = { name: 'node', type: 'trojan', server: u.hostname, port: parseInt(u.port || '443'), password: u.username };
-              if (u.searchParams.get('sni')) n.sni = u.searchParams.get('sni');
-              if (['1', 'true'].includes(u.searchParams.get('allowInsecure'))) n['skip-cert-verify'] = true;
+              if (sec === 'reality') n['reality-opts'] = { 'public-key': u.searchParams.get('pbk') || '' };
               return n;
             }
             return null;
           }
-
           (async () => {
             const subRes = await trySubconverter();
             if (subRes) {
-              console.log('✅ Subconverter 转换成功！');
               fs.writeFileSync('config.yaml', 'socks-port: 7891\nallow-lan: true\nmode: global\n' + subRes);
             } else {
-              console.log('⚠️ Subconverter 未返回有效配置，自动切换至 JS 原生节点解析器...');
               const nodeObj = parseRawLink(nodeLink);
-              if (!nodeObj) {
-                console.error('❌ 无法识别 NODE_LINK 格式！');
-                process.exit(1);
-              }
-              
-              const configObj = {
-                'socks-port': 7891,
-                'allow-lan': true,
-                'mode': 'global',
-                'proxies': [ nodeObj ]
-              };
-              
-              fs.writeFileSync('config.yaml', yaml.dump(configObj));
+              fs.writeFileSync('config.yaml', yaml.dump({ 'socks-port': 7891, 'allow-lan': true, 'mode': 'global', 'proxies': [ nodeObj ] }));
             }
-            console.log('✅ Mihomo 配置文件 config.yaml 生成完毕！');
           })();
           EOF
-          
-          # 执行节点解析
           node parse_node.js
-          
-          # 5. 后台启动 Mihomo 代理内核
           nohup ./mihomo -d . -f config.yaml > mihomo.log 2>&1 &
-          sleep 4
-          
-          # 6. 端口与连通性检查
-          if nc -z 127.0.0.1 7891; then
-            echo "✅ 代理内核启动完毕！已成功桥接本地 SOCKS5 代理端口: 127.0.0.1:7891"
-          else
-            echo "❌ 代理内核启动失败，7891 端口未响应！排查日志："
-            cat config.yaml
-            cat mihomo.log
-            exit 1
-          fi
+          sleep 3
+          nc -z 127.0.0.1 7891
 
-      - name: 执行自动化续期脚本
+      - name: 执行自动化动态续期
         env:
           FREE_EMAIL: ${{ secrets.FREE_EMAIL }}
           FREE_PASSWORD: ${{ secrets.FREE_PASSWORD }}
           SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          # 语法修复：使用标准规范的内联三元判定注入代理
           PROXY_URL: ${{ secrets.PROXY_URL != '' && secrets.PROXY_URL || (env.NODE_LINK != '' && 'socks5://127.0.0.1:7891' || '') }}
         run: node renew.js
 
-      - name: 上传运行截图
+      - name: 🔄 同步下一次动态执行计划
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f .github/workflows/freemchost.yml ] && ! git diff --quiet .github/workflows/freemchost.yml; then
+            echo "📅 发现新的动态 Cron 调度计划，正在同步至仓库..."
+            git add .github/workflows/freemchost.yml
+            git commit -m "chore: 动态更新下一次执行计划 [skip ci]"
+            git push
+          else
+            echo "计划未变动或无需调整，跳过提交。"
+          fi
+
+      - name: 上传现场截图
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -203,13 +126,3 @@ jobs:
           path: screenshots/*.png
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: 🧹 删除旧的工作流记录 (保留最新 3 条)
-        if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          retain_days: 0      
-          # 提高至 3 条，避免当前执行被并发清理误杀
-          keep_minimum_runs: 3
