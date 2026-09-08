@@ -2,13 +2,12 @@ name: Freemchost Auto Renew Permanent
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    # 每天执行 2 次（UTC 00:15 和 12:15，即北京时间 08:15 和 20:15）
+    - cron: '15 0,12 * * *'
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: write
-  workflows: write # 👈 必须添加此行，允许更新 workflow 本身
+  contents: read
 
 jobs:
   browser-auto-renew:
@@ -21,9 +20,6 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
 
       - name: 安装 Node.js 环境
         uses: actions/setup-node@v4
@@ -104,20 +100,6 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           PROXY_URL: ${{ secrets.PROXY_URL != '' && secrets.PROXY_URL || (env.NODE_LINK != '' && 'socks5://127.0.0.1:7891' || '') }}
         run: node renew.js
-
-      - name: 🔄 同步下一次动态执行计划
-        if: always()
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -f .github/workflows/freemchost.yml ] && ! git diff --quiet .github/workflows/freemchost.yml; then
-            echo "📅 发现新的动态 Cron 调度计划，正在同步至仓库..."
-            git add .github/workflows/freemchost.yml
-            git commit -m "chore: 动态更新下一次执行计划 [skip ci]"
-            git push origin HEAD:${{ github.ref_name }}
-          else
-            echo "计划未变动或无需调整，跳过提交。"
-          fi
 
       - name: 上传现场截图
         if: always()
