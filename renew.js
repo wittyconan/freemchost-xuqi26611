@@ -59,14 +59,13 @@ function scheduleNextRunInHours(hoursWait) {
     return;
   }
 
-  // 加上安全偏置：提前 15 分钟触发
+  // 提前 15 分钟触发，最小等待 10 分钟
   const targetTime = new Date(Date.now() + Math.max(hoursWait * 3600 * 1000 - 15 * 60 * 1000, 10 * 60 * 1000));
   const minute = targetTime.getUTCMinutes();
   const hour = targetTime.getUTCHours();
   const day = targetTime.getUTCDate();
   const month = targetTime.getUTCMonth() + 1;
 
-  // 生成特定日期的单次触发 Cron 模板
   const newCron = `${minute} ${hour} ${day} ${month} *`;
   console.log(`⏱️ 计算出的最佳下一次执行时刻 (UTC): ${newCron} (北京时间约: ${targetTime.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })})`);
 
@@ -84,7 +83,6 @@ function scheduleNextRunInHours(hoursWait) {
   const tgToken = (process.env.TG_BOT_TOKEN || '').trim();
   const tgChatId = (process.env.TG_CHAT_ID || '').trim();
 
-  // 严格换行与逗号兼容拆分
   const serverUrls = rawUrls
     .split(/[\r\n,]+/)
     .map(u => u.trim())
@@ -110,7 +108,7 @@ function scheduleNextRunInHours(hoursWait) {
 
   const page = await context.newPage();
   let reports = [];
-  let minWaitHours = 999; // 跟踪最先需要续期的时长
+  let minWaitHours = 999;
 
   try {
     console.log('🚀 登录 FreeMCHost 控制台...');
@@ -128,7 +126,6 @@ function scheduleNextRunInHours(hoursWait) {
     ]);
     console.log('✅ 登录成功！');
 
-    // 逐台机器执行巡检/续期
     for (let i = 0; i < serverUrls.length; i++) {
       const currentUrl = serverUrls[i];
       const sIndex = i + 1;
@@ -140,17 +137,33 @@ function scheduleNextRunInHours(hoursWait) {
         await page.waitForTimeout(2500);
         await forceDismissPopups(page);
 
-        // 切换 Manage
+        // 点击 Manage 标签
         const manageTab = page.locator('button, a, div[role="tab"]').filter({ hasText: /^Manage$/ }).first();
         await manageTab.waitFor({ state: 'visible', timeout: 15000 });
         await manageTab.click();
-        await page.waitForTimeout(2000);
+        
+        // 关键：显式等待倒计时卡片在 Manage 页面完成动态水合加载
+        console.log('⏳ 等待倒计时与 Renew now 按钮加载...');
+        const renewBtn = page.locator('button:has-text("Renew now")').first();
+        await renewBtn.waitFor({ state: 'visible', timeout: 15000 });
+        await page.waitForTimeout(1500);
         await forceDismissPopups(page);
 
-        // 解析时间：如 "02 D 11 H 46 M"
+        // 精确从 TIME UNTIL EXPIRY 容器中抓取 D / H / M 数字
         const timeData = await page.evaluate(() => {
-          const text = document.body.innerText || '';
-          const match = text.match(/(\d{1,2})\s*D\s*(\d{1,2})\s*H\s*(\d{1,2})\s*M/i);
+          // 查找包含 TIME UNTIL EXPIRY 的父级容器
+          const headings = Array.from(document.querySelectorAll('*'));
+          const expiryHeader = headings.find(el => el.textContent && el.textContent.trim().toUpperCase() === 'TIME UNTIL EXPIRY');
+          
+          let containerText = '';
+          if (expiryHeader && expiryHeader.parentElement) {
+            containerText = expiryHeader.parentElement.innerText;
+          } else {
+            containerText = document.body.innerText || '';
+          }
+
+          // 匹配紧跟在方块结构里的格式: 数字 D 数字 H 数字 M
+          const match = containerText.match(/(\d{1,2})\s*\n?\s*D\s*\n?\s*(\d{1,2})\s*\n?\s*H\s*\n?\s*(\d{1,2})\s*\n?\s*M/i);
           if (match) {
             const d = parseInt(match[1], 10);
             const h = parseInt(match[2], 10);
@@ -161,14 +174,12 @@ function scheduleNextRunInHours(hoursWait) {
         });
 
         const remainHours = timeData ? timeData.totalHours : 99;
-        const remainStr = timeData ? timeData.raw : '未知';
-        console.log(`⏱️ 服务器 [${sIndex}] 剩余时长: ${remainStr} (约 ${remainHours.toFixed(1)} 小时)`);
+        const remainStr = timeData ? timeData.raw : '未读取到';
+        console.log(`⏱️ 服务器 [${sIndex}] 实际剩余时长: ${remainStr} (约 ${remainHours.toFixed(1)} 小时)`);
 
-        // 判断是否符合 < 46 小时 免费续期标准
+        // 判断是否小于 46 小时
         if (remainHours < 46) {
-          console.log(`🎯 时长已低于 46 小时门槛，立即进行 60h 续期...`);
-          const renewBtn = page.locator('button:has-text("Renew now")').first();
-          await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
+          console.log(`🎯 时长低于 46 小时，执行续期...`);
           await renewBtn.click();
           await page.waitForTimeout(2500);
 
@@ -193,17 +204,15 @@ function scheduleNextRunInHours(hoursWait) {
           });
 
           if (renewSuccess) {
-            console.log(`🎉 服务器 [${sIndex}] 成功刷新至 60 小时！`);
+            console.log(`🎉 服务器 [${sIndex}] 续期成功！`);
             reports.push(`🟢 <b>服务器 ${sIndex}</b>: 成功满血续期 (+60h)`);
-            // 续期满血后，距离下一次 46h 还剩 14 小时（60 - 46 = 14）
             minWaitHours = Math.min(minWaitHours, 13.8);
           } else {
-            console.log(`⚠️ 服务器 [${sIndex}] 未能在弹窗中点击到 60 hours 选项。`);
-            reports.push(`🟡 <b>服务器 ${sIndex}</b>: 已触发但未能选定 60h`);
+            console.log(`⚠️ 服务器 [${sIndex}] 未能点击到 60 hours 选项。`);
+            reports.push(`🟡 <b>服务器 ${sIndex}</b>: 触发续期但未选定 60h`);
           }
           await page.keyboard.press('Escape');
         } else {
-          // 尚未到 46 小时，计算距离 46 小时还有多久
           const waitTime = Math.max(remainHours - 46, 0.5);
           minWaitHours = Math.min(minWaitHours, waitTime);
           console.log(`⏳ 服务器 [${sIndex}] 尚未进入 46h 窗口，距开放还差约 ${waitTime.toFixed(1)} 小时。`);
@@ -216,18 +225,15 @@ function scheduleNextRunInHours(hoursWait) {
       }
     }
 
-    // 严谨计算下一次计划
-    if (minWaitHours === 999) minWaitHours = 6; // 异常兜底
+    if (minWaitHours === 999) minWaitHours = 6;
     scheduleNextRunInHours(minWaitHours);
 
-    // 汇总推送 TG
     const nextExecutionText = new Date(Date.now() + minWaitHours * 3600 * 1000).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
     const summaryMsg = `🤖 <b>FreeMCHost 动态续期监控报告</b>\n\n${reports.join('\n')}\n\n<b>下次执行预计:</b> ${nextExecutionText} 左右\n<b>策略:</b> 纯动态睡眠调度 (零多余资源消耗)`;
     await sendTelegramMessage(tgToken, tgChatId, summaryMsg);
 
   } catch (error) {
-    console.error('❌ 全局致命错误:', error.message);
-    await page.screenshot({ path: 'screenshots/renew_fatal.png', fullPage: true });
+    console.error('❌ 全局错误:', error.message);
     await sendTelegramMessage(tgToken, tgChatId, `🚨 <b>Freemchost 运行崩溃:</b> <code>${error.message}</code>`);
     process.exitCode = 1;
   } finally {
