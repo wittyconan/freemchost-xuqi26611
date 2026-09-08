@@ -65,10 +65,9 @@ async function safeFill(page, locator, value, label) {
   await locator.fill(value);
   await page.waitForTimeout(300);
 
-  // 验证输入是否成功，若被前端清空则走按键模拟
   const actualVal = await locator.inputValue().catch(() => '');
   if (!actualVal) {
-    console.log(`⚠️ 检测到 ${label} 未被写入或被重置，切换为键盘模拟逐字输入...`);
+    console.log(`⚠️ 检测到 ${label} 未被写入，切换为键盘模拟逐字输入...`);
     await locator.click();
     await locator.pressSequentially(value, { delay: 30 });
   }
@@ -83,7 +82,7 @@ async function safeFill(page, locator, value, label) {
   const tgChatId = (process.env.TG_CHAT_ID || '').trim();
 
   if (!email || !password) {
-    console.error('❌ 致命错误: FREE_EMAIL 或 FREE_PASSWORD 环境变量为空！请检查 GitHub Secrets 配置！');
+    console.error('❌ 致命错误: FREE_EMAIL 或 FREE_PASSWORD 环境变量为空！');
     process.exit(1);
   }
 
@@ -120,7 +119,7 @@ async function safeFill(page, locator, value, label) {
   try {
     console.log('🚀 正在打开 Freemchost 登录页面...');
     await page.goto('https://freemchost.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(2000); // 留足时间让 SPA 框架完成 hydration 挂载
+    await page.waitForTimeout(2000);
     await forceDismissPopups(page);
 
     console.log('📝 正在输入账号密码...');
@@ -187,57 +186,85 @@ async function safeFill(page, locator, value, label) {
     await page.waitForTimeout(2000);
     await forceDismissPopups(page);
 
-    // 3. 检查当前剩余时间与 Renew now 按钮状态
-    console.log('🔍 正在检查 Manage 面板及续期按钮...');
-    
+    // 3. 获取倒计时剩余时长
     const expiryText = await page.evaluate(() => {
       const allText = document.body.innerText || '';
       const match = allText.match(/(\d{2}\s*D\s*\d{2}\s*H\s*\d{2}\s*M)/i);
       return match ? match[0] : '未知';
     }).catch(() => '未知');
-    console.log(`⏱️ 当前服务器剩余时间约: ${expiryText}`);
+    console.log(`⏱️ 当前服务器剩余时间: ${expiryText}`);
 
+    // 定位红色的 Renew now 按钮
     const renewBtn = page.locator('button:has-text("Renew now")').first();
     await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
 
-    const isEnabled = await renewBtn.isEnabled().catch(() => true);
+    console.log('🔄 正在点击 [Renew now] 呼出续期选项弹窗...');
+    await renewBtn.click();
+    await page.waitForTimeout(2500);
 
-    if (await renewBtn.isVisible() && isEnabled) {
-      console.log('🔄 正在触发 [Renew now] 按钮点击...');
-      await renewBtn.click();
-      await page.waitForTimeout(2000);
+    // 4. 【核心匹配】：解析 "Keep your server online" 弹窗中的免费续期状态
+    console.log('📋 正在匹配免费续期选项状态...');
 
-      // 4. 处理可能出现的弹窗确认（48 hours / 60 hours / Confirm）
-      console.log('📋 检测是否弹出续期确认选项...');
-      const popupClicked = await page.evaluate(() => {
-        const els = Array.from(document.querySelectorAll('button, div[role="button"], span'));
-        const target = els.find(el => {
-          const t = (el.textContent || '').trim().toLowerCase();
-          return t.includes('48 hours') || t.includes('60 hours') || t === 'confirm' || t === 'extend';
-        });
-        if (target) {
-          target.click();
-          return true;
-        }
-        return false;
-      });
+    const modalStatus = await page.evaluate(() => {
+      const allText = document.body.innerText || '';
+      const hasModal = allText.includes('Keep your server online');
+      if (!hasModal) return { foundModal: false };
 
-      if (popupClicked) {
-        console.log('👉 已确认选择续期弹窗选项！');
+      // 规则：Free renewals open 46h before expiry — come back later.
+      const isLocked = allText.toLowerCase().includes('come back later') || allText.toLowerCase().includes('open 46h before');
+
+      // 寻找 60 hours 选项块
+      const allElements = Array.from(document.querySelectorAll('*'));
+      const target60 = allElements.find(el => 
+        el.children.length === 0 && 
+        el.textContent.trim().toLowerCase().includes('60 hours')
+      );
+
+      if (isLocked) {
+        return { foundModal: true, locked: true };
       }
 
+      if (target60) {
+        // 找到可点击的容器
+        let p = target60;
+        for (let i = 0; i < 6; i++) {
+          if (p.parentElement && p.parentElement !== document.body) {
+            p = p.parentElement;
+            if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick || p.classList.toString().includes('cursor-pointer')) {
+              p.click();
+              return { foundModal: true, locked: false, clicked: true };
+            }
+          }
+        }
+        target60.click();
+        return { foundModal: true, locked: false, clicked: true };
+      }
+
+      return { foundModal: true, locked: false, clicked: false };
+    });
+
+    if (modalStatus.locked) {
+      console.log('⏳ 免费续期规则触发：剩余时间仍 > 46h，免费续期（60 hours）尚未开放。');
+      await page.keyboard.press('Escape'); // 安全关闭弹窗
+      await page.waitForTimeout(1000);
+      await page.screenshot({ path: 'screenshots/renew_waiting_46h.png', fullPage: true });
+
+      const notice = `ℹ️ <b>Freemchost 巡检正常</b>\n\n<b>剩余时间:</b> ${expiryText}\n<b>状态:</b> 官方规则为到期前 46h 内开放免费续期，当前无需操作。\n<b>下周期检测:</b> 6 小时后自动再访`;
+      console.log('✅ ' + notice.replace(/<[^>]+>/g, ''));
+      await sendTelegramMessage(tgToken, tgChatId, notice);
+
+    } else if (modalStatus.clicked) {
+      console.log('🎉 成功选中 [60 hours] 免费续期选项！');
       await page.waitForTimeout(4000);
       await page.screenshot({ path: 'screenshots/renew_success.png', fullPage: true });
 
-      const msg = `🎉 <b>Freemchost 自动续期成功</b>\n\n<b>剩余时间:</b> ${expiryText}\n<b>状态:</b> 已点击 Renew now 完成加时\n<b>时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
-      console.log('✅ 续期完成！');
-      await sendTelegramMessage(tgToken, tgChatId, msg);
+      const successMsg = `🎉 <b>Freemchost 自动续期成功</b>\n\n<b>续期档位:</b> 60 hours (Discord Boosted)\n<b>前序剩余:</b> ${expiryText}\n<b>状态:</b> 续期完成，服务器已满血复活！\n<b>时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      console.log('✅ ' + successMsg.replace(/<[^>]+>/g, ''));
+      await sendTelegramMessage(tgToken, tgChatId, successMsg);
 
     } else {
-      console.log('⚠️ Renew now 按钮当前不可点击或时间充足，安全跳过。');
-      await page.screenshot({ path: 'screenshots/renew_skip.png', fullPage: true });
-      const skipMsg = `ℹ️ <b>Freemchost 续期跳过</b>\n\n<b>剩余时间:</b> ${expiryText}\n<b>状态:</b> 续期按钮暂未开放，下个周期自动重试。`;
-      await sendTelegramMessage(tgToken, tgChatId, skipMsg);
+      console.log('⚠️ 弹窗已开启，但未能在视窗内锁定目标选项，保存截图排查。');
+      await page.screenshot({ path: 'screenshots/renew_modal_check.png', fullPage: true });
     }
 
   } catch (error) {
