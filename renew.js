@@ -21,11 +21,17 @@ async function sendTelegramMessage(botToken, chatId, text) {
   }
 }
 
-// 🛡️ 扫除干扰弹窗
+// 🛡️ 扫除干扰弹窗与 Cookie 协议
 async function forceDismissPopups(page) {
-  console.log('🛡️ 正在执行 DOM 级弹窗粉碎策略...');
   await page.keyboard.press('Escape');
-  await page.waitForTimeout(500);
+
+  try {
+    const cookieBtn = page.locator('button:has-text("Accept all"), button:has-text("Reject all")').first();
+    if (await cookieBtn.isVisible({ timeout: 1500 })) {
+      await cookieBtn.click();
+      console.log('🍪 已关闭 Cookie 授权弹窗');
+    }
+  } catch (e) {}
 
   await page.evaluate(() => {
     const allEls = Array.from(document.querySelectorAll('*'));
@@ -48,7 +54,7 @@ async function forceDismissPopups(page) {
       }
     }
   });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
 }
 
 (async () => {
@@ -91,7 +97,7 @@ async function forceDismissPopups(page) {
 
   try {
     console.log('🚀 正在打开 Freemchost 登录页面...');
-    await page.goto('https://freemchost.com/login', { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto('https://freemchost.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
     console.log('📝 正在输入账号密码...');
     await page.fill('input[type="email"], input[name="email"]', email);
@@ -99,23 +105,20 @@ async function forceDismissPopups(page) {
 
     console.log('🔐 正在尝试登录...');
     await Promise.all([
-      page.waitForNavigation({ waitUntil: 'networkidle', timeout: 60000 }),
+      page.waitForURL(url => !url.href.includes('/login'), { timeout: 45000 }),
       page.click('button[type="submit"]')
     ]);
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 优先进入控制台主页，模拟人手点击服务器卡片进入详情
-    console.log('📂 正在访问服务列表主页: https://freemchost.com/app');
-    await page.goto('https://freemchost.com/app', { waitUntil: 'networkidle', timeout: 60000 });
+    // 1. 进入服务器控制面板
+    console.log('📂 正在访问服务列表主页...');
+    await page.goto('https://freemchost.com/app', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(3000);
     await forceDismissPopups(page);
 
-    // 寻找并点击服务器卡片
     console.log('🔍 正在定位服务器卡片...');
     let cardClicked = false;
-    
-    // 如果环境变量指定了服务器 URL 且包含 UUID，提取 UUID 寻找链接
     let targetUuid = '';
     if (serverPageUrl && serverPageUrl.includes('/servers/')) {
       targetUuid = serverPageUrl.split('/servers/')[1].trim();
@@ -124,64 +127,70 @@ async function forceDismissPopups(page) {
     if (targetUuid) {
       const specificLink = page.locator(`a[href*="${targetUuid}"]`).first();
       if (await specificLink.count() > 0) {
-        console.log(`👉 找到指定 UUID [${targetUuid}] 卡片，正在点击进入...`);
+        console.log(`👉 找到指定 UUID [${targetUuid}] 卡片，进入详情...`);
         await specificLink.click();
         cardClicked = true;
       }
     }
 
     if (!cardClicked) {
-      console.log('👉 点击列表中的第一个服务器卡片...');
       const firstServerLink = page.locator('a[href*="/app/servers/"]').first();
       if (await firstServerLink.count() > 0) {
+        console.log('👉 点击列表中第一个服务器卡片...');
         await firstServerLink.click();
         cardClicked = true;
       }
     }
 
-    // 如果通过卡片点击没成功，后备使用 goto 访问
     if (!cardClicked && serverPageUrl) {
-      console.log('⚠️ 未找到卡片，使用直达 URL 进入详情页:', serverPageUrl);
-      await page.goto(serverPageUrl, { waitUntil: 'networkidle', timeout: 60000 });
+      console.log('⚠️ 使用直达 URL 进入详情页:', serverPageUrl);
+      await page.goto(serverPageUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     }
 
     console.log('📍 实际到达页面 URL:', page.url());
+    await page.waitForTimeout(3000);
+    await forceDismissPopups(page);
+
+    // 2. 切换到 [Manage] 选项卡
+    console.log('🗂️ 正在定位并点击 [Manage] 标签页...');
+    const manageTab = page.locator('button, a, div[role="tab"]').filter({ hasText: /^Manage$/ }).first();
+    await manageTab.waitFor({ state: 'visible', timeout: 15000 });
+    await manageTab.click();
+    await page.waitForTimeout(2000);
+    await forceDismissPopups(page);
+
+    // 3. 检查当前剩余时间与 Renew now 按钮状态
+    console.log('🔍 正在检查 Manage 面板及续期按钮...');
     
-    // 2. 循环等待 API 响应及控制台面板加载
-    console.log('⏳ 等待服务器面板 API 加载数据...');
-    let loadedSuccess = false;
-    for (let i = 0; i < 5; i++) {
-      await forceDismissPopups(page);
-      
-      const pageState = await page.evaluate(() => {
-        const text = document.body.innerText || '';
-        return {
-          hasRenew: text.toLowerCase().includes('renew now'),
-          hasError: text.includes("Couldn't load this server") || text.includes("use of VPNs is not permitted")
-        };
-      });
+    // 抓取页面当前剩余时间文本，方便通知
+    const expiryText = await page.evaluate(() => {
+      const box = document.querySelector('div:has(> button:has-text("Renew now")), div.grid');
+      const allText = document.body.innerText || '';
+      const match = allText.match(/(\d{2}\s*D\s*\d{2}\s*H\s*\d{2}\s*M)/i);
+      return match ? match[0] : '未知';
+    }).catch(() => '未知');
+    console.log(`⏱️ 当前服务器剩余时间约: ${expiryText}`);
 
-      if (pageState.hasRenew) {
-        loadedSuccess = true;
-        console.log('✅ 服务器详情面板及 [Renew now] 按钮就绪！');
-        break;
-      }
+    // 定位红色的 Renew now 按钮
+    const renewBtn = page.locator('button:has-text("Renew now")').first();
+    await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
 
-      if (pageState.hasError && i === 2) {
-        console.log('⚠️ 检测到页面组件未响应，进行一次局部刷新...');
-        await page.reload({ waitUntil: 'networkidle', timeout: 30000 }).catch(() => {});
-      }
+    const isEnabled = await renewBtn.isEnabled().catch(() => true);
 
-      await page.waitForTimeout(3000);
-    }
+    if (await renewBtn.isVisible() && isEnabled) {
+      console.log('🔄 正在触发 [Renew now] 按钮点击...');
+      await renewBtn.click();
+      await page.waitForTimeout(2000);
 
-    // 3. 寻找并触发 [Renew now] 点击
-    console.log('🔄 正在触发 [Renew now] 按钮点击...');
-    let renewClicked = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      renewClicked = await page.evaluate(() => {
-        const allBtns = Array.from(document.querySelectorAll('button, a, div[role="button"], span'));
-        const target = allBtns.find(b => b.textContent && b.textContent.trim().toLowerCase() === 'renew now');
+      // 4. 处理可能出现的弹窗确认（48 hours / 60 hours / Confirm）
+      console.log('📋 检测是否弹出续期确认选项...');
+      const popupClicked = await page.evaluate(() => {
+        const els = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+        // 匹配 48 hours / 60 hours / Extend / Confirm 等弹窗按钮
+        const target = els.find(el => {
+          const t = (el.textContent || '').trim().toLowerCase();
+          return t.includes('48 hours') || t.includes('60 hours') || t === 'confirm' || t === 'extend';
+        });
         if (target) {
           target.click();
           return true;
@@ -189,77 +198,28 @@ async function forceDismissPopups(page) {
         return false;
       });
 
-      if (renewClicked) {
-        console.log('👉 已成功触发 [Renew now] 点击！');
-        break;
+      if (popupClicked) {
+        console.log('👉 已确认选择续期弹窗选项！');
       }
-      
-      await forceDismissPopups(page);
-      await page.waitForTimeout(2000);
+
+      await page.waitForTimeout(4000);
+      await page.screenshot({ path: 'screenshots/renew_success.png', fullPage: true });
+
+      const msg = `🎉 <b>Freemchost 自动续期成功</b>\n\n<b>剩余时间:</b> ${expiryText}\n<b>状态:</b> 已点击 Renew now 完成加时\n<b>时间:</b> ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+      console.log('✅ 续期完成！');
+      await sendTelegramMessage(tgToken, tgChatId, msg);
+
+    } else {
+      console.log('⚠️ Renew now 按钮当前不可点击或时间充足，安全跳过。');
+      await page.screenshot({ path: 'screenshots/renew_skip.png', fullPage: true });
+      const skipMsg = `ℹ️ <b>Freemchost 续期跳过</b>\n\n<b>剩余时间:</b> ${expiryText}\n<b>状态:</b> 续期按钮暂未开放，下个周期自动重试。`;
+      await sendTelegramMessage(tgToken, tgChatId, skipMsg);
     }
-
-    if (!renewClicked) {
-      throw new Error('未能在页面找到 [Renew now] 按钮，FreeMCHost 界面数据未正常加载。');
-    }
-
-    // 4. 等待 48 hours 弹窗并点击
-    console.log('📋 正在等待 48小时 续期弹窗...');
-    await page.waitForTimeout(2000);
-
-    let clicked48h = false;
-    for (let attempt = 0; attempt < 4; attempt++) {
-      clicked48h = await page.evaluate(() => {
-        const allEls = Array.from(document.querySelectorAll('*'));
-        // 查找精确的 48 hours 节点
-        const targetText = allEls.find(el => 
-          el.children.length === 0 && 
-          el.textContent.trim().toLowerCase().includes('48 hours')
-        );
-
-        if (targetText) {
-          // 向上检索找到对应的选项框容器并触发点击
-          let p = targetText;
-          for (let i = 0; i < 5; i++) {
-            if (p.parentElement && p.parentElement !== document.body) {
-              p = p.parentElement;
-              if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) {
-                p.click();
-                return true;
-              }
-            }
-          }
-          targetText.click();
-          return true;
-        }
-        return false;
-      });
-
-      if (clicked48h) {
-        console.log('👉 成功选择 [48 hours] 选项！');
-        break;
-      }
-      await page.waitForTimeout(1500);
-    }
-
-    if (!clicked48h) {
-      console.log('⚠️ 尝试使用 Locator 强制点击 [48 hours]...');
-      const hours48Option = page.locator('text=/48 hours/i').first();
-      await hours48Option.waitFor({ state: 'visible', timeout: 10000 });
-      await hours48Option.click({ force: true });
-    }
-
-    // 5. 保存截图并发送 TG 通知
-    await page.waitForTimeout(5000);
-    await page.screenshot({ path: 'screenshots/renew_success.png', fullPage: true });
-
-    const successMsg = '🎉 Freemchost 服务器已成功点击 48小时 续期！';
-    console.log('✅ ' + successMsg);
-    await sendTelegramMessage(tgToken, tgChatId, successMsg);
 
   } catch (error) {
     console.error('❌ 执行过程中出错:', error.message);
     await page.screenshot({ path: 'screenshots/renew_error.png', fullPage: true });
-    await sendTelegramMessage(tgToken, tgChatId, `⚠️ Freemchost 续期失败: ${error.message}`);
+    await sendTelegramMessage(tgToken, tgChatId, `⚠️ <b>Freemchost 续期异常</b>\n\n错误: <code>${error.message}</code>`);
     process.exitCode = 1;
   } finally {
     await browser.close();
