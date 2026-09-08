@@ -57,13 +57,35 @@ async function forceDismissPopups(page) {
   await page.waitForTimeout(500);
 }
 
+// 强力模拟真实用户输入（防止 SPA 水合清空）
+async function safeFill(page, locator, value, label) {
+  await locator.waitFor({ state: 'visible', timeout: 15000 });
+  await locator.click();
+  await locator.focus();
+  await locator.fill(value);
+  await page.waitForTimeout(300);
+
+  // 验证输入是否成功，若被前端清空则走按键模拟
+  const actualVal = await locator.inputValue().catch(() => '');
+  if (!actualVal) {
+    console.log(`⚠️ 检测到 ${label} 未被写入或被重置，切换为键盘模拟逐字输入...`);
+    await locator.click();
+    await locator.pressSequentially(value, { delay: 30 });
+  }
+}
+
 (async () => {
-  const email = process.env.FREE_EMAIL;
-  const password = process.env.FREE_PASSWORD;
-  const serverPageUrl = process.env.SERVER_PAGE_URL;
-  const proxyUrl = process.env.PROXY_URL;
-  const tgToken = process.env.TG_BOT_TOKEN;
-  const tgChatId = process.env.TG_CHAT_ID;
+  const email = (process.env.FREE_EMAIL || '').trim();
+  const password = (process.env.FREE_PASSWORD || '').trim();
+  const serverPageUrl = (process.env.SERVER_PAGE_URL || '').trim();
+  const proxyUrl = (process.env.PROXY_URL || '').trim();
+  const tgToken = (process.env.TG_BOT_TOKEN || '').trim();
+  const tgChatId = (process.env.TG_CHAT_ID || '').trim();
+
+  if (!email || !password) {
+    console.error('❌ 致命错误: FREE_EMAIL 或 FREE_PASSWORD 环境变量为空！请检查 GitHub Secrets 配置！');
+    process.exit(1);
+  }
 
   console.log('🚀 正在启动伪装浏览器...');
 
@@ -98,20 +120,26 @@ async function forceDismissPopups(page) {
   try {
     console.log('🚀 正在打开 Freemchost 登录页面...');
     await page.goto('https://freemchost.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(2000); // 留足时间让 SPA 框架完成 hydration 挂载
+    await forceDismissPopups(page);
 
     console.log('📝 正在输入账号密码...');
-    await page.fill('input[type="email"], input[name="email"]', email);
-    await page.fill('input[type="password"], input[name="password"]', password);
+    const emailLocator = page.locator('input[type="email"], input[name="email"]').first();
+    const passLocator = page.locator('input[type="password"], input[name="password"]').first();
+
+    await safeFill(page, emailLocator, email, 'Email');
+    await safeFill(page, passLocator, password, 'Password');
 
     console.log('🔐 正在尝试登录...');
+    const signInBtn = page.locator('button:has-text("Sign in"), button[type="submit"]').first();
     await Promise.all([
       page.waitForURL(url => !url.href.includes('/login'), { timeout: 45000 }),
-      page.click('button[type="submit"]')
+      signInBtn.click()
     ]);
 
     console.log('✅ 登录成功！当前 URL:', page.url());
 
-    // 1. 进入服务器控制面板
+    // 1. 进入服务列表主页
     console.log('📂 正在访问服务列表主页...');
     await page.goto('https://freemchost.com/app', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForTimeout(3000);
@@ -162,16 +190,13 @@ async function forceDismissPopups(page) {
     // 3. 检查当前剩余时间与 Renew now 按钮状态
     console.log('🔍 正在检查 Manage 面板及续期按钮...');
     
-    // 抓取页面当前剩余时间文本，方便通知
     const expiryText = await page.evaluate(() => {
-      const box = document.querySelector('div:has(> button:has-text("Renew now")), div.grid');
       const allText = document.body.innerText || '';
       const match = allText.match(/(\d{2}\s*D\s*\d{2}\s*H\s*\d{2}\s*M)/i);
       return match ? match[0] : '未知';
     }).catch(() => '未知');
     console.log(`⏱️ 当前服务器剩余时间约: ${expiryText}`);
 
-    // 定位红色的 Renew now 按钮
     const renewBtn = page.locator('button:has-text("Renew now")').first();
     await renewBtn.waitFor({ state: 'visible', timeout: 10000 });
 
@@ -186,7 +211,6 @@ async function forceDismissPopups(page) {
       console.log('📋 检测是否弹出续期确认选项...');
       const popupClicked = await page.evaluate(() => {
         const els = Array.from(document.querySelectorAll('button, div[role="button"], span'));
-        // 匹配 48 hours / 60 hours / Extend / Confirm 等弹窗按钮
         const target = els.find(el => {
           const t = (el.textContent || '').trim().toLowerCase();
           return t.includes('48 hours') || t.includes('60 hours') || t === 'confirm' || t === 'extend';
