@@ -2,12 +2,13 @@ name: Freemchost Auto Renew Permanent
 
 on:
   schedule:
-    - cron: '0 0 * * *' # 初始占位，后续会被脚本根据实际剩余时间自动动态重写
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
   actions: write
+  workflows: write # 👈 必须添加此行，允许更新 workflow 本身
 
 jobs:
   browser-auto-renew:
@@ -113,7 +114,7 @@ jobs:
             echo "📅 发现新的动态 Cron 调度计划，正在同步至仓库..."
             git add .github/workflows/freemchost.yml
             git commit -m "chore: 动态更新下一次执行计划 [skip ci]"
-            git push
+            git push origin HEAD:${{ github.ref_name }}
           else
             echo "计划未变动或无需调整，跳过提交。"
           fi
