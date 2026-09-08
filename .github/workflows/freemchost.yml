@@ -2,6 +2,7 @@ name: Freemchost Auto Renew Permanent
 
 on:
   schedule:
+    # 依然保持高密度覆盖（每 6 小时一次，确保 60 小时有效期持续刷新）
     - cron: '10 */6 * * *'
   workflow_dispatch:
 
@@ -15,6 +16,7 @@ jobs:
     timeout-minutes: 10
     env:
       NODE_LINK: ${{ secrets.NODE_LINK }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: 拉取代码
@@ -25,15 +27,9 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 缓存 Playwright 浏览器依赖
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-v1
-
-      - name: 安装 Playwright、js-yaml 及依赖
+      - name: 安装基础网络工具与依赖包
         run: |
+          sudo apt-get update -y && sudo apt-get install -y netcat-openbsd
           npm init -y
           npm install playwright js-yaml
           npx playwright install chromium --with-deps
@@ -195,7 +191,8 @@ jobs:
           SERVER_PAGE_URL: ${{ secrets.SERVER_PAGE_URL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          PROXY_URL: ${{ secrets.PROXY_URL || (env.NODE_LINK != '' && 'socks5://127.0.0.1:7891' || '') }}
+          # 语法修复：使用标准规范的内联三元判定注入代理
+          PROXY_URL: ${{ secrets.PROXY_URL != '' && secrets.PROXY_URL || (env.NODE_LINK != '' && 'socks5://127.0.0.1:7891' || '') }}
         run: node renew.js
 
       - name: 上传运行截图
@@ -207,11 +204,12 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: 🧹 删除旧的工作流记录 (保留最新 1 条)
+      - name: 🧹 删除旧的工作流记录 (保留最新 3 条)
         if: always()
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ github.token }}
           repository: ${{ github.repository }}
           retain_days: 0      
-          keep_minimum_runs: 1
+          # 提高至 3 条，避免当前执行被并发清理误杀
+          keep_minimum_runs: 3
