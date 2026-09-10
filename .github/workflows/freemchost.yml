@@ -12,7 +12,7 @@ permissions:
 jobs:
   browser-auto-renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       NODE_LINK: ${{ secrets.NODE_LINK }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -26,12 +26,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: 安装基础工具与依赖
+      - name: 安装基础工具与精简依赖
         run: |
-          sudo apt-get update -y && sudo apt-get install -y netcat-openbsd
           npm init -y
           npm install playwright js-yaml
-          npx playwright install chromium --with-deps
+          # 核心优化：仅下载 Chromium 引擎，跳过死锁卡顿的多国字体 apt 源
+          npx playwright install chromium
 
       - name: ⚙️ 部署 Mihomo 代理内核
         if: ${{ env.NODE_LINK != '' }}
